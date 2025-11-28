@@ -17,6 +17,24 @@ def normalize_and_average_contractility(file_path, output_folder=None):
     """
     
     # Load the data
+    import os
+    import pandas as pd
+
+    file_path = file_path  # ton chemin initial
+
+    # Vérifier si fichier est un CSV
+    if file_path.lower().endswith(".csv"):
+        # Charger le CSV
+        df = pd.read_csv(file_path)
+
+        # Construire le nom du nouveau fichier
+        new_path = os.path.splitext(file_path)[0] + ".xlsx"
+
+        # Sauvegarder en XLSX
+        df.to_excel(new_path, index=False)
+
+        # Mettre à jour file_path pour qu'il pointe vers le .xlsx
+        file_path = new_path
     data = pd.read_excel(file_path)
     
     # Set output folder
@@ -27,7 +45,7 @@ def normalize_and_average_contractility(file_path, output_folder=None):
     os.makedirs(output_folder, exist_ok=True)
     
     # Find the name column (assumes it starts with 'Name')
-    name_column = next((col for col in data.columns if col.startswith('Name')), None)
+    name_column = next((col for col in data.columns if col.startswith('Video')), None)
     if name_column is None:
         raise ValueError("No column starting with 'Video name' found in the data")
     

@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.stats import wilcoxon, norm
+from scipy.stats import wilcoxon, sem
 import os
 from tkinter import Tk, filedialog
 
@@ -28,61 +28,6 @@ root.destroy()
 
 if not os.path.exists(save_folder):
     os.makedirs(save_folder)
-
-# ------------------ FUNCTION: NON-PARAMETRIC CI FOR WILCOXON ------------------
-def wilcoxon_ci_improved(x, y, alpha=0.05, method='hodges-lehmann'):
-    """
-    Calculate non-parametric confidence interval for paired differences
-    
-    Parameters:
-    -----------
-    x, y : array-like
-        Paired samples
-    alpha : float
-        Significance level (default 0.05 for 95% CI)
-    method : str
-        'hodges-lehmann' : Uses all pairwise averages (more accurate)
-        'simple' : Uses sorted differences (faster but less accurate)
-    
-    Returns:
-    --------
-    ci_low, ci_high : float
-        Lower and upper bounds of confidence interval
-    """
-    d = np.array(y) - np.array(x)
-    n = len(d)
-    
-    if n == 0:
-        return np.nan, np.nan
-    
-    if method == 'hodges-lehmann':
-        # Hodges-Lehmann estimator: median of all pairwise averages
-        # This is the TRUE non-parametric CI for Wilcoxon signed-rank test
-        walsh_averages = []
-        for i in range(n):
-            for j in range(i, n):
-                walsh_averages.append((d[i] + d[j]) / 2)
-        
-        walsh_sorted = np.sort(walsh_averages)
-        m = len(walsh_sorted)
-        
-        # Calculate confidence interval indices
-        z = norm.ppf(1 - alpha/2)
-        # More accurate formula for Wilcoxon CI
-        k = int(np.round(m/2 - z * np.sqrt(n * (n + 1) * (2*n + 1) / 24)))
-        k = max(0, min(k, m-1))
-        
-        return walsh_sorted[k], walsh_sorted[m - k - 1]
-    
-    else:  # method == 'simple'
-        # Simplified version (faster but less accurate)
-        d_sorted = np.sort(d)
-        z = norm.ppf(1 - alpha/2)
-        k = int(np.floor((n - z * np.sqrt(n)) / 2))
-        k = max(0, min(k, n-1))
-        
-        return d_sorted[k], d_sorted[n - k - 1]
-
 
 # ------------------ EXCEL WRITER ------------------
 output_file = os.path.join(save_folder, "Wilcoxon_Stats.xlsx")
@@ -116,9 +61,7 @@ for sheet_name, df in all_sheets.items():
     
     stats_rows = []
     means = []
-    medians = []  # Ajouter médiane (plus robuste que moyenne)
-    ci_low_plot = []
-    ci_high_plot = []
+    sems_plot = []
     pvals_plot = []
     n_samples = []
     
@@ -141,11 +84,9 @@ for sheet_name, df in all_sheets.items():
         
         if n < 2:
             print(f"    - ⚠ SKIPPED (données insuffisantes)")
-            stats_rows.append([col, "Wilcoxon", np.nan, np.nan, np.nan, np.nan, np.nan, n, ""])
+            stats_rows.append([col, "Wilcoxon", np.nan, np.nan, np.nan, np.nan, n, ""])
             means.append(np.nan)
-            medians.append(np.nan)
-            ci_low_plot.append(np.nan)
-            ci_high_plot.append(np.nan)
+            sems_plot.append(np.nan)
             pvals_plot.append(None)
             n_samples.append(n)
             continue
@@ -165,39 +106,27 @@ for sheet_name, df in all_sheets.items():
             
         except Exception as e:
             print(f"    - ⚠ ERROR: {e}")
-            stats_rows.append([col, "Wilcoxon", np.nan, np.nan, np.nan, np.nan, np.nan, n, "ERROR"])
+            stats_rows.append([col, "Wilcoxon", np.nan, np.nan, np.nan, np.nan, n, "ERROR"])
             means.append(np.nan)
-            medians.append(np.nan)
-            ci_low_plot.append(np.nan)
-            ci_high_plot.append(np.nan)
+            sems_plot.append(np.nan)
             pvals_plot.append(None)
             n_samples.append(n)
             continue
         
-        # ---- NON-PARAMETRIC CI (improved) ----
-        # Choisir la méthode: 'hodges-lehmann' (précis) ou 'simple' (rapide)
-        # Pour n > 100, utiliser 'simple' pour éviter trop de calculs
-        ci_method = 'simple' if n > 100 else 'hodges-lehmann'
-        ci_low, ci_high = wilcoxon_ci_improved(x, y, method=ci_method)
-        
-        print(f"    - IC 95% (méthode: {ci_method}): [{ci_low:.4f}, {ci_high:.4f}]")
-        
-        # Statistiques descriptives
+        # ---- MOYENNE DES DIFFÉRENCES ET SEM ----
         mean_diff = np.mean(diff)
-        median_diff = np.median(diff)  # Plus robuste aux outliers
+        sem_diff = sem(diff)
         
         print(f"    - Différence moyenne: {mean_diff:.4f}")
-        print(f"    - Différence médiane: {median_diff:.4f}")
+        print(f"    - SEM: {sem_diff:.4f}")
         
         # Sauvegarder les statistiques
         significance = "****" if pval < 0.0001 else "***" if pval < 0.001 else "**" if pval < 0.01 else "*" if pval < 0.05 else ""
-        stats_rows.append([col, "Wilcoxon", stat, pval, mean_diff, median_diff, ci_low, ci_high, n, significance])
+        stats_rows.append([col, "Wilcoxon", stat, pval, mean_diff, sem_diff, n, significance])
         
-        # Pour le graphique (utiliser médiane car plus adaptée au test non-paramétrique)
+        # Pour le graphique
         means.append(mean_diff)
-        medians.append(median_diff)
-        ci_low_plot.append(ci_low)
-        ci_high_plot.append(ci_high)
+        sems_plot.append(sem_diff)
         pvals_plot.append(pval)
         n_samples.append(n)
     
@@ -205,7 +134,7 @@ for sheet_name, df in all_sheets.items():
     if stats_rows:
         df_stats = pd.DataFrame(stats_rows, 
                                columns=["Concentration", "Test", "Statistic", "p-value", 
-                                       "Mean_Diff", "Median_Diff", "CI_low", "CI_high", "N", "Significance"])
+                                       "Mean_Diff", "SEM", "N", "Significance"])
         
         # Tronquer le nom de la sheet à 31 caractères (limite Excel)
         excel_sheet_name = str(sheet_name)[:31]
@@ -214,37 +143,33 @@ for sheet_name, df in all_sheets.items():
     
     # ------------------ PLOT ------------------
     # Vérifier qu'il y a au moins une valeur valide à plotter
-    if not all(np.isnan(medians)):
-        # Utiliser médiane plutôt que moyenne (plus cohérent avec test non-paramétrique)
-        medians_arr = np.array(medians)
-        ci_low_arr = np.array(ci_low_plot)
-        ci_high_arr = np.array(ci_high_plot)
+    if not all(np.isnan(means)):
+        means_arr = np.array(means)
+        sems_arr = np.array(sems_plot)
         
-        # Calculer les barres d'erreur
-        yerr_lower = np.abs(medians_arr - ci_low_arr)
-        yerr_upper = np.abs(ci_high_arr - medians_arr)
-        yerr = [yerr_lower, yerr_upper]
+        # Barres d'erreur symétriques (SEM)
+        yerr = sems_arr
         
         x_pos = np.arange(4)
         
         plt.figure(figsize=(8, 6))
-        plt.errorbar(x_pos, medians_arr, yerr=yerr, fmt='o-', capsize=6, linewidth=2.5, 
+        plt.errorbar(x_pos, means_arr, yerr=yerr, fmt='o-', capsize=6, linewidth=2.5, 
                     markersize=9, color='steelblue', ecolor='gray', alpha=0.9)
         
         # Ajouter les étoiles de significativité
-        valid_medians = medians_arr[~np.isnan(medians_arr)]
-        if len(valid_medians) > 0:
-            ymax = np.max(valid_medians)
-            ymin = np.min(valid_medians)
+        valid_means = means_arr[~np.isnan(means_arr)]
+        if len(valid_means) > 0:
+            ymax = np.max(valid_means + sems_arr[~np.isnan(means_arr)])
+            ymin = np.min(valid_means - sems_arr[~np.isnan(means_arr)])
             y_range = ymax - ymin if ymax != ymin else abs(ymax) if ymax != 0 else 1
         else:
             ymax, ymin, y_range = 1, 0, 1
         
         for i, p in enumerate(pvals_plot):
-            if p is not None and p < 0.05 and not np.isnan(medians_arr[i]):
+            if p is not None and p < 0.05 and not np.isnan(means_arr[i]):
                 stars = "****" if p < 0.0001 else "***" if p < 0.001 else "**" if p < 0.01 else "*"
                 y_offset = 0.08 * y_range
-                plt.text(x_pos[i], medians_arr[i] + y_offset, stars, 
+                plt.text(x_pos[i], means_arr[i] + sems_arr[i] + y_offset, stars, 
                         ha="center", fontsize=16, fontweight='bold', color='red')
         
         # Ajouter les tailles d'échantillon
@@ -258,7 +183,7 @@ for sheet_name, df in all_sheets.items():
         
         plt.xticks(x_pos, ["Conc_1", "Conc_2", "Conc_3", "Conc_4"], fontsize=11)
         plt.xlabel("Concentration", fontsize=12, fontweight='bold')
-        plt.ylabel(f"Δ {sheet_name} (médiane, vs Conc_-1)", fontsize=12, fontweight='bold')
+        plt.ylabel(f"Δ {sheet_name} (moyenne, vs Conc_-1)", fontsize=12, fontweight='bold')
         plt.title(f"{sheet_name}\nTest de Wilcoxon apparié: Conc_-1 vs Conc_X", 
                  fontsize=13, fontweight='bold', pad=15)
         plt.grid(alpha=0.3, linestyle=':', linewidth=0.5)

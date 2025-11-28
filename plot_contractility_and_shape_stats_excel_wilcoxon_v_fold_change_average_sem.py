@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.stats import wilcoxon, norm
+from scipy.stats import wilcoxon, sem
 import os
 from tkinter import Tk, filedialog
 
@@ -28,58 +28,6 @@ root.destroy()
 
 if not os.path.exists(save_folder):
     os.makedirs(save_folder)
-
-# ------------------ FUNCTION: NON-PARAMETRIC CI FOR FOLD CHANGE ------------------
-def fold_change_ci(x, y, alpha=0.05):
-    """
-    Calculate non-parametric confidence interval for fold change (ratio y/x)
-    Uses the Hodges-Lehmann estimator approach on ratios
-    """
-    ratios = np.array(y) / np.array(x)
-    ratios_sorted = np.sort(ratios)
-    n = len(ratios_sorted)
-    
-    if n == 0:
-        return np.nan, np.nan
-    
-    # Wilcoxon-based CI for the median ratio
-    z = norm.ppf(1 - alpha/2)
-    k = int(np.floor((n - z * np.sqrt(n)) / 2))
-    k = max(0, min(k, n-1))
-    
-    return ratios_sorted[k], ratios_sorted[n-k-1]
-
-
-def log_fold_change_ci(x, y, alpha=0.05):
-    """
-    Alternative: Calculate CI on log scale, then back-transform
-    More appropriate for multiplicative effects
-    """
-    # Éviter les divisions par zéro et les logs de valeurs négatives
-    valid_idx = (x > 0) & (y > 0)
-    if np.sum(valid_idx) == 0:
-        return np.nan, np.nan
-    
-    x_valid = x[valid_idx]
-    y_valid = y[valid_idx]
-    
-    log_ratios = np.log(y_valid) - np.log(x_valid)  # = log(y/x)
-    log_ratios_sorted = np.sort(log_ratios)
-    n = len(log_ratios_sorted)
-    
-    if n == 0:
-        return np.nan, np.nan
-    
-    z = norm.ppf(1 - alpha/2)
-    k = int(np.floor((n - z * np.sqrt(n)) / 2))
-    k = max(0, min(k, n-1))
-    
-    # Back-transform to original scale
-    ci_low = np.exp(log_ratios_sorted[k])
-    ci_high = np.exp(log_ratios_sorted[n-k-1])
-    
-    return ci_low, ci_high
-
 
 # ------------------ EXCEL WRITER ------------------
 output_file = os.path.join(save_folder, "Wilcoxon_Stats.xlsx")
@@ -113,8 +61,7 @@ for sheet_name, df in all_sheets.items():
     
     stats_rows = []
     means = []
-    ci_low_plot = []
-    ci_high_plot = []
+    sems_plot = []
     pvals_plot = []
     n_samples = []
     
@@ -139,8 +86,7 @@ for sheet_name, df in all_sheets.items():
             print(f"    - ⚠ SKIPPED (données insuffisantes)")
             stats_rows.append([col, "Wilcoxon", np.nan, np.nan, np.nan, np.nan, n, ""])
             means.append(np.nan)
-            ci_low_plot.append(np.nan)
-            ci_high_plot.append(np.nan)
+            sems_plot.append(np.nan)
             pvals_plot.append(None)
             n_samples.append(n)
             continue
@@ -162,34 +108,33 @@ for sheet_name, df in all_sheets.items():
             print(f"    - ⚠ ERROR: {e}")
             stats_rows.append([col, "Wilcoxon", np.nan, np.nan, np.nan, np.nan, n, "ERROR"])
             means.append(np.nan)
-            ci_low_plot.append(np.nan)
-            ci_high_plot.append(np.nan)
+            sems_plot.append(np.nan)
             pvals_plot.append(None)
             n_samples.append(n)
             continue
         
-        # ---- FOLD CHANGE ET IC ----
-        # Calculer le fold change moyen
-        fold_changes = y / x
-        mean_fold_change = np.mean(fold_changes)
-        
-        # OPTION 1: IC direct sur les fold changes (recommandé si distribution symétrique)
-        # ci_low_fc, ci_high_fc = fold_change_ci(x, y)
-        
-        # OPTION 2: IC sur log scale puis back-transform (recommandé pour données multiplicatives)
-        ci_low_fc, ci_high_fc = log_fold_change_ci(x, y)
+        # ---- FOLD CHANGE MOYEN ET SEM ----
+        # Éviter les divisions par zéro
+        valid_idx = x > 0
+        if np.sum(valid_idx) == 0:
+            print(f"    - ⚠ WARNING: Aucune valeur baseline valide pour fold change")
+            mean_fold_change = np.nan
+            sem_fc = np.nan
+        else:
+            fold_changes = y[valid_idx] / x[valid_idx]
+            mean_fold_change = np.mean(fold_changes)
+            sem_fc = sem(fold_changes)
         
         print(f"    - Fold Change moyen: {mean_fold_change:.4f}")
-        print(f"    - IC 95% FC: [{ci_low_fc:.4f}, {ci_high_fc:.4f}]")
+        print(f"    - SEM FC: {sem_fc:.4f}")
         
         # Sauvegarder les statistiques
         significance = "****" if pval < 0.0001 else "***" if pval < 0.001 else "**" if pval < 0.01 else "*" if pval < 0.05 else ""
-        stats_rows.append([col, "Wilcoxon", stat, pval, ci_low_fc, ci_high_fc, n, significance])
+        stats_rows.append([col, "Wilcoxon", stat, pval, mean_fold_change, sem_fc, n, significance])
         
         # Pour le graphique
         means.append(mean_fold_change)
-        ci_low_plot.append(ci_low_fc)
-        ci_high_plot.append(ci_high_fc)
+        sems_plot.append(sem_fc)
         pvals_plot.append(pval)
         n_samples.append(n)
     
@@ -197,7 +142,7 @@ for sheet_name, df in all_sheets.items():
     if stats_rows:
         df_stats = pd.DataFrame(stats_rows, 
                                columns=["Concentration", "Test", "Statistic", "p-value", 
-                                       "CI_low_FC", "CI_high_FC", "N", "Significance"])
+                                       "Mean_FC", "SEM_FC", "N", "Significance"])
         
         # Tronquer le nom de la sheet à 31 caractères (limite Excel)
         excel_sheet_name = str(sheet_name)[:31]
@@ -208,13 +153,10 @@ for sheet_name, df in all_sheets.items():
     # Vérifier qu'il y a au moins une valeur valide à plotter
     if not all(np.isnan(means)):
         means_arr = np.array(means)
-        ci_low_arr = np.array(ci_low_plot)
-        ci_high_arr = np.array(ci_high_plot)
+        sems_arr = np.array(sems_plot)
         
-        # Calculer les barres d'erreur (asymétriques pour fold change)
-        yerr_lower = np.abs(means_arr - ci_low_arr)
-        yerr_upper = np.abs(ci_high_arr - means_arr)
-        yerr = [yerr_lower, yerr_upper]
+        # Barres d'erreur symétriques (SEM)
+        yerr = sems_arr
         
         x_pos = np.arange(4)
         
@@ -225,8 +167,8 @@ for sheet_name, df in all_sheets.items():
         # Ajouter les étoiles de significativité
         valid_means = means_arr[~np.isnan(means_arr)]
         if len(valid_means) > 0:
-            ymax = np.max(valid_means)
-            ymin = np.min(valid_means)
+            ymax = np.max(valid_means + sems_arr[~np.isnan(means_arr)])
+            ymin = np.min(valid_means - sems_arr[~np.isnan(means_arr)])
             y_range = ymax - ymin if ymax != ymin else abs(ymax) if ymax != 0 else 1
         else:
             ymax, ymin, y_range = 1, 0, 1
@@ -235,7 +177,7 @@ for sheet_name, df in all_sheets.items():
             if p is not None and p < 0.05 and not np.isnan(means_arr[i]):
                 stars = "****" if p < 0.0001 else "***" if p < 0.001 else "**" if p < 0.01 else "*"
                 y_offset = 0.08 * y_range
-                plt.text(x_pos[i], means_arr[i] + y_offset, stars, 
+                plt.text(x_pos[i], means_arr[i] + sems_arr[i] + y_offset, stars, 
                         ha="center", fontsize=16, fontweight='bold', color='red')
         
         # Ajouter les tailles d'échantillon
